@@ -71,3 +71,6 @@ cmd_exec      = "ctrl+r"
 terminal      = "ctrl+o"
 toggle_hidden = "ctrl+h"
 quick_view    = "ctrl+q"
+
+# Tabs
+tabs = "ctrl+n"

@@ -16,6 +16,7 @@ type ThemeFile struct {
 	Panel   panelTOML         `toml:"panel"`
 	Status  sectionTOML       `toml:"statusbar"`
 	Menu    menuTOML          `toml:"menubar"`
+	Tab     tabTOML           `toml:"tab"`
 }
 
 type panelTOML struct {
@@ -62,6 +63,13 @@ type menuTOML struct {
 	FKeyHintBG  string `toml:"fkey_hint_bg"`
 	FKeyLabelFG string `toml:"fkey_label_fg"`
 	FKeyLabelBG string `toml:"fkey_label_bg"`
+}
+
+type tabTOML struct {
+	FG       string `toml:"fg"`
+	BG       string `toml:"bg"`
+	ActiveFG string `toml:"active_fg"`
+	ActiveBG string `toml:"active_bg"`
 }
 
 // Theme source constants.
@@ -241,6 +249,9 @@ func buildTheme(tf ThemeFile) Theme {
 
 		CmdLine: def.CmdLine,
 	}
+
+	th.Tab = orDefault(style(tf.Tab.FG, tf.Tab.BG), th.FKeyHint)
+	th.TabActive = orDefault(style(tf.Tab.ActiveFG, tf.Tab.ActiveBG), th.StatusBar)
 
 	return th
 }

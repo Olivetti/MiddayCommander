@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"strings"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -24,6 +25,10 @@ import (
 // maxPreviewBytes is how much of a file we read for the preview. We only ever
 // load the head so following the cursor across large files stays cheap.
 const maxPreviewBytes = 256 * 1024
+
+// nextSeq numbers preview instances so a read can be routed back to the
+// preview that asked for it.
+var nextSeq atomic.Uint64
 
 type contentKind int
 
@@ -39,6 +44,8 @@ const (
 
 // Model is the file preview sub-model.
 type Model struct {
+	// id travels with a remote read so the app can route the result back here.
+	id        uint64
 	path      string
 	name      string
 	lines     []string // text content lines (kindText only)
@@ -53,7 +60,9 @@ type Model struct {
 }
 
 // New creates an empty preview.
-func New() Model { return Model{} }
+func New() Model { return Model{id: nextSeq.Add(1)} }
+
+func (m Model) ID() uint64 { return m.id }
 
 // SetSize sets the box dimensions. height is the content row count (matching the
 // panel's list height) so the bordered box aligns with the sibling panel.
@@ -74,6 +83,8 @@ func (m Model) Path() string { return m.path }
 
 // FileLoadedMsg carries a preview read that happened off the event loop.
 type FileLoadedMsg struct {
+	// ID is the preview that asked for the read.
+	ID        uint64
 	Path      string
 	Data      []byte
 	Truncated bool
@@ -102,24 +113,27 @@ func (m *Model) SetFile(ref vfs.FileRef, info fs.FileInfo, isDir, available bool
 		m.applyContent(data, truncated, err)
 	default:
 		m.kind = kindLoading
-		return loadFileCmd(ref)
+		return loadFileCmd(m.id, ref)
 	}
 	return nil
 }
 
-// HandleFileLoaded applies a completed read, ignoring one the cursor has
-// already moved past.
+// HandleFileLoaded applies a completed read, ignoring one meant for another
+// preview or one the cursor moved past.
 func (m *Model) HandleFileLoaded(msg FileLoadedMsg) {
+	if msg.ID != 0 && msg.ID != m.id {
+		return // belongs to another preview
+	}
 	if msg.Path != m.path || m.kind != kindLoading {
 		return
 	}
 	m.applyContent(msg.Data, msg.Truncated, msg.Err)
 }
 
-func loadFileCmd(ref vfs.FileRef) tea.Cmd {
+func loadFileCmd(id uint64, ref vfs.FileRef) tea.Cmd {
 	return func() tea.Msg {
 		data, truncated, err := readHead(ref)
-		return FileLoadedMsg{Path: ref.Path, Data: data, Truncated: truncated, Err: err}
+		return FileLoadedMsg{ID: id, Path: ref.Path, Data: data, Truncated: truncated, Err: err}
 	}
 }
 

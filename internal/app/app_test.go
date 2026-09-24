@@ -120,7 +120,7 @@ func TestConnectFlowAsksToTrustThenOpensPanel(t *testing.T) {
 	if !strings.HasPrefix(loc.Label, "ssh://tester@") {
 		t.Errorf("want an ssh:// label, got %q", loc.Label)
 	}
-	if m.panelConns[m.focus] == nil {
+	if m.tab().panelConns[m.tab().focus] == nil {
 		t.Error("want the connection recorded against the panel")
 	}
 
@@ -154,7 +154,7 @@ func TestDeclinedHostKeyLeavesPanelLocal(t *testing.T) {
 	if m.activePanel().Path() != before {
 		t.Errorf("want the panel unmoved, got %q", m.activePanel().Path())
 	}
-	if m.panelConns[m.focus] != nil {
+	if m.tab().panelConns[m.tab().focus] != nil {
 		t.Error("want no connection recorded after declining")
 	}
 }
@@ -243,7 +243,7 @@ func TestLeavingAServerReleasesItsConnection(t *testing.T) {
 	m, cmd = run(t, m, dialog.Result{Kind: dialog.KindConfirm, Confirmed: true, Tag: tagTrustHost})
 	m, _ = run(t, m, drain(t, cmd))
 
-	if m.panelConns[m.focus] == nil {
+	if m.tab().panelConns[m.tab().focus] == nil {
 		t.Fatal("want a connection after opening the server")
 	}
 
@@ -251,7 +251,7 @@ func TestLeavingAServerReleasesItsConnection(t *testing.T) {
 	m.activePanel().SetPath(t.TempDir())
 	m.releaseUnusedConnections()
 
-	if m.panelConns[m.focus] != nil {
+	if m.tab().panelConns[m.tab().focus] != nil {
 		t.Error("want the connection released once the panel left the server")
 	}
 }
@@ -351,6 +351,17 @@ func selectEntry(t *testing.T, m Model, name string) Model {
 	return m
 }
 
+// mustTrustHost answers the host key prompt and returns the retry dial so a
+// test can finish the connect itself.
+func mustTrustHost(t *testing.T, m Model, cmd tea.Cmd) tea.Cmd {
+	t.Helper()
+	_, dial := run(t, m, dialog.Result{Kind: dialog.KindConfirm, Confirmed: true, Tag: tagTrustHost})
+	if dial == nil {
+		t.Fatal("want a retry dial after trusting the host key")
+	}
+	return dial
+}
+
 // connectPanel opens srv in the active panel, answering the host key prompt.
 func connectPanel(t *testing.T, m Model, srv remote.Server) Model {
 	t.Helper()
@@ -421,9 +432,9 @@ func TestCopyFromLocalPanelToRemotePanel(t *testing.T) {
 
 	m := newModel(t)
 	// Connect the right panel, then drive from the left (local) one.
-	m.focus = FocusRight
+	m.tab().focus = FocusRight
 	m = connectPanel(t, m, testServerFor(t, srv))
-	m.focus = FocusLeft
+	m.tab().focus = FocusLeft
 	m.activePanel().SetPath(src)
 	m = loadPanel(t, m)
 
@@ -465,8 +476,9 @@ func TestCancellingAConnectIsSilent(t *testing.T) {
 
 	// Esc on the connecting dialog cancels the attempt.
 	m, _ = run(t, m, connectedMsg{
-		side: m.focus,
-		err:  context.Canceled,
+		side:  m.tab().focus,
+		tabID: m.tab().id,
+		err:   context.Canceled,
 	})
 
 	if m.dialog != nil {
@@ -477,6 +489,51 @@ func TestCancellingAConnectIsSilent(t *testing.T) {
 	}
 }
 
+// A connect result landing after its tab closed must not leak the connection
+// or touch the surviving tab.
+func TestConnectForAClosedTabReleasesTheConnection(t *testing.T) {
+	isolate(t)
+	srv := testserver.Start(t)
+
+	m := newModel(t)
+	m, first := run(t, m, serverConnect(testServerFor(t, srv)))
+	m, dial := run(t, m, drain(t, first))
+	dial = mustTrustHost(t, m, dial)
+
+	// The dial brought back a connection, but its tab is gone by the time the
+	// result lands.
+	conn := drain(t, dial).(connectedMsg).conn
+	if conn == nil {
+		t.Fatal("want a connection from the dial")
+	}
+	if _, err := conn.FS().ReadDir(srv.Root); err != nil {
+		t.Fatal("want the connection alive while the panel is open")
+	}
+
+	gone := m.tab().id
+	m.addTabFrom(m.activeTab)
+	m.closeTabAt(0)
+
+	m, _ = run(t, m, connectedMsg{conn: conn, side: FocusLeft, tabID: gone})
+
+	if _, err := conn.FS().ReadDir(srv.Root); err == nil {
+		t.Error("a connection for a closed tab should be released, not held")
+	}
+	if m.dialog != nil {
+		t.Errorf("a result for a closed tab should not open a dialog, got %v", m.dialog.Kind())
+	}
+	for i := range m.tabs {
+		for _, c := range m.tabs[i].panelConns {
+			if c != nil {
+				t.Errorf("tab %d recorded a connection that belongs to a closed tab", i)
+			}
+		}
+	}
+	if !m.activePanel().IsLocal() {
+		t.Error("the surviving tab must stay local")
+	}
+}
+
 func TestConnectTimeoutExplainsItself(t *testing.T) {
 	isolate(t)
 	srv := testserver.Start(t)
@@ -484,8 +541,9 @@ func TestConnectTimeoutExplainsItself(t *testing.T) {
 	m := newModel(t)
 	m, _ = run(t, m, serverConnect(testServerFor(t, srv)))
 	m, _ = run(t, m, connectedMsg{
-		side: m.focus,
-		err:  context.DeadlineExceeded,
+		side:  m.tab().focus,
+		tabID: m.tab().id,
+		err:   context.DeadlineExceeded,
 	})
 
 	if m.dialog == nil || m.dialog.Kind() != dialog.KindError {
@@ -500,7 +558,7 @@ func TestSwappingPanelsKeepsTheRemoteConnection(t *testing.T) {
 	m := newModel(t)
 	m = connectPanel(t, m, testServerFor(t, srv))
 
-	conn := m.panelConns[FocusLeft]
+	conn := m.tab().panelConns[FocusLeft]
 	if conn == nil {
 		t.Fatal("want the connection recorded against the left panel")
 	}
@@ -509,10 +567,10 @@ func TestSwappingPanelsKeepsTheRemoteConnection(t *testing.T) {
 	// The release sweep runs on the next panel keypress.
 	m, _ = run(t, m, tea.KeyMsg{Type: tea.KeyDown})
 
-	if !m.rightPanel.UsesFS(conn.FS()) {
+	if !m.tab().rightPanel.UsesFS(conn.FS()) {
 		t.Fatal("the server should have moved to the right panel")
 	}
-	if m.panelConns[FocusRight] != conn {
+	if m.tab().panelConns[FocusRight] != conn {
 		t.Error("want the connection tracked against the panel that now shows it")
 	}
 	if _, err := conn.FS().ReadDir(srv.Root); err != nil {

@@ -27,6 +27,10 @@ type Theme struct {
 	FKeyHint  lipgloss.Style
 	FKeyLabel lipgloss.Style
 
+	// Tabs
+	Tab       lipgloss.Style
+	TabActive lipgloss.Style
+
 	// Command line
 	CmdLine lipgloss.Style
 }

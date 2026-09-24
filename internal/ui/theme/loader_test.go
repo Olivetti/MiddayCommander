@@ -5,12 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/charmbracelet/lipgloss"
 )
 
 func TestLoadByName(t *testing.T) {
-	// Set up a temp config dir so LoadByName finds the theme file
-	// (the repo's themes/ dir isn't in ~/.config/mdc/themes on CI).
+	// A temp config dir, so LoadByName finds the file (CI has no
+	// ~/.config/mdc/themes).
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	themesDir := filepath.Join(tmp, "mdc", "themes")
@@ -30,10 +31,9 @@ func TestLoadByName(t *testing.T) {
 		t.Fatalf("LoadByName error: %v", err)
 	}
 
-	// Verify non-default colors were applied
 	def := Default()
 
-	// FileNormal should differ from default (catppuccin uses #cdd6f4 on #1e1e2e, not ANSI 15 on 4)
+	// Not the default (ANSI 15 on 4).
 	if th.FileNormal.GetForeground() == def.FileNormal.GetForeground() &&
 		th.FileNormal.GetBackground() == def.FileNormal.GetBackground() {
 		t.Errorf("FileNormal was not overridden by theme")
@@ -43,6 +43,43 @@ func TestLoadByName(t *testing.T) {
 	t.Logf("FileDir fg=%v bg=%v bold=%v", th.FileDir.GetForeground(), th.FileDir.GetBackground(), th.FileDir.GetBold())
 	t.Logf("PanelBorder fg=%v bg=%v", th.PanelBorder.GetForeground(), th.PanelBorder.GetBackground())
 	t.Logf("StatusBar fg=%v bg=%v", th.StatusBar.GetForeground(), th.StatusBar.GetBackground())
+}
+
+func TestTabSectionParses(t *testing.T) {
+	// The [tab] keys must actually parse.
+	var tf ThemeFile
+	if _, err := toml.Decode(`
+[tab]
+fg        = "#111111"
+bg        = "#222222"
+active_fg = "#333333"
+active_bg = "#444444"
+`, &tf); err != nil {
+		t.Fatal(err)
+	}
+	if tf.Tab.FG != "#111111" || tf.Tab.BG != "#222222" ||
+		tf.Tab.ActiveFG != "#333333" || tf.Tab.ActiveBG != "#444444" {
+		t.Fatalf("documented [tab] keys were not parsed: %+v", tf.Tab)
+	}
+}
+
+func TestTabBarFollowsTheme(t *testing.T) {
+	mocha := mochaTheme()
+	classic := Default()
+
+	// With no [tab] section, the bar falls back to the F-key styles.
+	if mocha.Tab.GetForeground() == classic.Tab.GetForeground() &&
+		mocha.Tab.GetBackground() == classic.Tab.GetBackground() {
+		t.Error("mocha's tab bar should not use the classic palette")
+	}
+	if mocha.Tab.GetForeground() != mocha.FKeyHint.GetForeground() ||
+		mocha.Tab.GetBackground() != mocha.FKeyHint.GetBackground() {
+		t.Error("an unconfigured [tab] should fall back to the theme's key hint style")
+	}
+	if mocha.TabActive.GetForeground() != mocha.StatusBar.GetForeground() ||
+		mocha.TabActive.GetBackground() != mocha.StatusBar.GetBackground() {
+		t.Error("an unconfigured [tab] should fall back to the theme's status bar style")
+	}
 }
 
 func TestOrDefault(t *testing.T) {
