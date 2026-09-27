@@ -17,7 +17,7 @@ func TestNavigation(t *testing.T) {
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if jump, ok := cmd().(JumpMsg); !ok || jump.Index != 2 {
 		t.Fatalf("want JumpMsg{Index:2}, got %v", cmd())
 	}
@@ -33,7 +33,7 @@ func TestNavigation(t *testing.T) {
 		t.Fatalf("want NewMsg{From:1}, got %v", cmd())
 	}
 
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if _, ok := cmd().(DismissMsg); !ok {
 		t.Fatalf("want DismissMsg, got %v", cmd())
 	}
@@ -119,7 +119,7 @@ func TestDigitJump(t *testing.T) {
 	}
 	m := New(rows, 0, 100, 30, 3, 10)
 
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
 	if jump, ok := cmd().(JumpMsg); !ok || jump.Index != 2 {
 		t.Fatalf("want JumpMsg{Index:2} for '3', got %v", cmd())
 	}
