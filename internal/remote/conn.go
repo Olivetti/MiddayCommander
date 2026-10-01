@@ -170,8 +170,7 @@ func (r *Registry) Acquire(ctx context.Context, srv Server, creds Credentials) (
 	return conn, nil
 }
 
-// Release closes the connection once nothing holds it; a second release is
-// a no-op.
+// Release closes the connection once nothing holds it.
 func (r *Registry) Release(c *Conn) {
 	if c == nil {
 		return
@@ -179,9 +178,6 @@ func (r *Registry) Release(c *Conn) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if c.refs <= 0 {
-		return
-	}
 	c.refs--
 	if c.refs > 0 {
 		return
