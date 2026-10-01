@@ -450,6 +450,46 @@ func TestSharedConnectionSurvivesClosingOneOfTwoTabs(t *testing.T) {
 	}
 }
 
+// Both panels of one tab pointing at the same host share a connection that
+// holds two references, so closing the tab gives each reference back once.
+func TestClosingATabReleasesASharedConnectionOncePerPanel(t *testing.T) {
+	isolate(t)
+	srv := testserver.Start(t)
+	server := testServerFor(t, srv)
+
+	m := newModel(t)
+	m = connectPanel(t, m, server)
+	conn := m.tab().panelConns[FocusLeft]
+
+	// Opening the same host in the other panel hands back the same conn.
+	m, _ = run(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	m = connectPanel(t, m, server)
+	if got := m.tab().panelConns[FocusRight]; got != conn {
+		t.Fatal("want both panels to share one connection")
+	}
+
+	// A second tab showing the same host, so the connection has a holder that
+	// outlives the tab being closed.
+	m.addTabFrom(m.activeTab)
+	m = connectPanel(t, m, server)
+	if got := m.tab().panelConns[m.tab().focus]; got != conn {
+		t.Fatal("want the new tab to share the connection too")
+	}
+
+	m.closeTabAt(0)
+
+	// One holder is left, so the connection has to survive.
+	if _, err := conn.FS().ReadDir(srv.Root); err != nil {
+		t.Fatalf("the connection should survive closing one of its holders: %v", err)
+	}
+
+	m.tab().panelFor(m.tab().focus).SetPath(t.TempDir())
+	m.releaseUnusedConnections()
+	if _, err := conn.FS().ReadDir(srv.Root); err == nil {
+		t.Error("the connection should close once its last panel leaves the host")
+	}
+}
+
 func TestConnectionReleasedWhenBothPanelsLeaveTheServer(t *testing.T) {
 	isolate(t)
 	srv := testserver.Start(t)
