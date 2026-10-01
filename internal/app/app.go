@@ -237,8 +237,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case panel.DirLoadedMsg:
 		// The panel that asked may sit in a tab that is no longer active, so
-		// every tab is offered the load. A message with no ID addresses all of
-		// them, and the loop has to keep going after one panel accepts.
+		// every tab is offered the load and each one decides by ID. The loop
+		// has to keep going after one panel accepts.
 		var handled bool
 		for i := range m.tabs {
 			handled = m.tabs[i].leftPanel.HandleDirLoaded(msg) || handled

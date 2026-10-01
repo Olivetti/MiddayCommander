@@ -242,42 +242,6 @@ func TestDirLoadedReachesItsTabWhenInactive(t *testing.T) {
 	}
 }
 
-// A load with no panel ID addresses every tab, not just the active one. The
-// loop must keep going after the first panel accepts.
-func TestDirLoadedWithoutAnIDReachesEveryTab(t *testing.T) {
-	isolate(t)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	m := newModel(t)
-	m.tabs[0].leftPanel.SetPath(dir)
-	m.addTabFrom(m.activeTab)
-	m.tabs[1].leftPanel.SetPath(dir)
-	m.tabs[1].rightPanel.SetPath(dir)
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, _ = run(t, m, panel.DirLoadedMsg{Path: dir, Entries: entries})
-
-	for _, tc := range []struct {
-		tab  int
-		side FocusTarget
-	}{
-		{0, FocusLeft},
-		{1, FocusLeft},
-		{1, FocusRight},
-	} {
-		p := m.tabs[tc.tab].panelFor(tc.side)
-		if view := p.View(m.theme); !strings.Contains(view, "shared.txt") {
-			t.Errorf("tab %d %v: the broadcast load should have reached this panel", tc.tab, tc.side)
-		}
-	}
-}
-
 func TestTabLabelShowsRemoteLocation(t *testing.T) {
 	lfs := local.New(string(filepath.Separator))
 	p := panel.New(lfs, "/", panel.KeyMap{}, config.Default())

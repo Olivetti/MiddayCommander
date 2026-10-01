@@ -280,7 +280,7 @@ type DirLoadedMsg struct {
 // HandleDirLoaded applies a completed load, reporting whether it belonged to
 // this panel.
 func (m *Model) HandleDirLoaded(msg DirLoadedMsg) bool {
-	if msg.ID != 0 && msg.ID != m.id {
+	if msg.ID != m.id {
 		return false // belongs to another panel
 	}
 	if msg.Err != nil {
