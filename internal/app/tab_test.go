@@ -32,14 +32,15 @@ func TestClosingATabReleasesItsConnections(t *testing.T) {
 	isolate(t)
 	srv := testserver.Start(t)
 	m := newModel(t)
+	// A second, empty tab so the first one can be closed. A new tab copies the
+	// tab it came from, so this one is opened before the connection exists.
+	m.addTabFrom(m.activeTab)
+	m, _ = run(t, m, tablist.JumpMsg{Index: 0})
 	m = connectPanel(t, m, testServerFor(t, srv))
 	conn := m.tab().panelConns[m.tab().focus]
 	if conn == nil {
 		t.Fatal("want the connection recorded on the active tab")
 	}
-
-	// A second, empty tab so the first one can be closed.
-	m.addTabFrom(m.activeTab)
 	if _, err := conn.FS().ReadDir(srv.Root); err != nil {
 		t.Fatal("the connection should still be open before closing its tab")
 	}
@@ -119,15 +120,135 @@ func TestNewTabFromCursorTab(t *testing.T) {
 	if len(m.tabs) != 2 {
 		t.Fatalf("want two tabs, got %d", len(m.tabs))
 	}
-	// Give tab 0 a distinct path, then request a new tab from its row.
+	// Give tab 0 distinct paths per side, then request a new tab from its row.
 	m.tabs[0].leftPanel.SetPath(other)
+	second := t.TempDir()
+	m.tabs[0].rightPanel.SetPath(second)
 	m.openTabList(0)
 	m, _ = run(t, m, tablist.NewMsg{From: 0})
 	if len(m.tabs) != 3 {
 		t.Fatalf("want three tabs, got %d", len(m.tabs))
 	}
 	if got := m.tabs[2].leftPanel.LocalPath(); got != other {
-		t.Errorf("want the new tab based on tab 0's path %q, got %q", other, got)
+		t.Errorf("want the new tab's left panel based on tab 0's left path %q, got %q", other, got)
+	}
+	if got := m.tabs[2].rightPanel.LocalPath(); got != second {
+		t.Errorf("want the new tab's right panel based on tab 0's right path %q, got %q", second, got)
+	}
+}
+
+// A new tab copies the source tab's server panels too, keeping the connection
+// alive for the copy instead of dropping back to a local path.
+func TestNewTabMirrorsAServerPanelAndKeepsTheConnection(t *testing.T) {
+	isolate(t)
+	srv := testserver.Start(t)
+	server := testServerFor(t, srv)
+
+	m := newModel(t)
+	m = connectPanel(t, m, server)
+	conn := m.tab().panelConns[FocusLeft]
+	source := m.tab().leftPanel.Location()
+
+	m.addTabFrom(m.activeTab)
+	if len(m.tabs) != 2 {
+		t.Fatalf("want two tabs, got %d", len(m.tabs))
+	}
+
+	clone := m.tabs[1].leftPanel.Location()
+	if clone.Path != source.Path || clone.Label != source.Label || clone.Kind != source.Kind {
+		t.Errorf("want the copied panel on %s (%q), got %q",
+			source.Label, source.Path, clone.Path)
+	}
+	if !m.tabs[1].leftPanel.UsesFS(conn.FS()) {
+		t.Error("the copied panel should read through the same connection")
+	}
+	if got := m.tabs[1].panelConns[FocusLeft]; got != conn {
+		t.Fatal("want the new tab to record the connection it copies")
+	}
+	if _, err := conn.FS().ReadDir(srv.Root); err != nil {
+		t.Fatalf("the connection should stay open for both tabs: %v", err)
+	}
+
+	// Closing the copy gives its reference back and leaves the source alone.
+	m.closeTabAt(1)
+	if _, err := conn.FS().ReadDir(srv.Root); err != nil {
+		t.Errorf("the source tab should keep the connection after the copy closes: %v", err)
+	}
+
+	// The source leaving the host last is what finally closes it, which only
+	// holds if the copy already gave its own reference back.
+	m.tab().leftPanel.SetPath(t.TempDir())
+	m.releaseUnusedConnections()
+	if _, err := conn.FS().ReadDir(srv.Root); err == nil {
+		t.Error("the connection should close once no tab uses it")
+	}
+}
+
+// An archive is a location too, but it is not somewhere a new tab can open:
+// copying it would show a listing with no archive behind it.
+func TestNewTabDoesNotCopyAnArchive(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bundle.tar"), []byte("not really a tar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newModel(t)
+	m.tabs[0].leftPanel.SetPath(dir)
+	loaded := m.tabs[0].leftPanel.LoadDir()().(panel.DirLoadedMsg)
+	m.tabs[0].leftPanel.HandleDirLoaded(loaded)
+
+	loc := vfs.Location{
+		FS:    m.tabs[0].leftPanel.Location().FS,
+		Path:  filepath.Join(dir, "bundle.tar"),
+		Kind:  vfs.KindArchive,
+		Label: "bundle.tar",
+	}
+	m.tabs[0].leftPanel.SetLocation(loc)
+
+	before := m.tabs[0].leftPanel.LocalPath()
+	m.addTabFrom(m.activeTab)
+
+	if m.tabs[1].leftPanel.InArchive() {
+		t.Error("a new tab should not open inside an archive it has no handle to")
+	}
+	if got := m.tabs[1].leftPanel.Location().Path; got != before {
+		t.Errorf("want the local fallback at %q, got %q", before, got)
+	}
+	if got := m.tabs[0].leftPanel.LocalPath(); got != before {
+		t.Errorf("the source panel should be untouched, got %q want %q", got, before)
+	}
+}
+
+// A new tab opens on the panel its source had focused, so work can continue
+// on the same side instead of jumping to the other one.
+func TestNewTabKeepsTheFocusedSide(t *testing.T) {
+	isolate(t)
+	for _, focus := range []FocusTarget{FocusLeft, FocusRight} {
+		m := newModel(t)
+		if m.tab().focus != FocusLeft {
+			t.Fatalf("setup: want a new tab focused on the left, got %v", m.tab().focus)
+		}
+		if focus == FocusRight {
+			m.toggleFocus()
+		}
+		if m.tab().focus != focus {
+			t.Fatalf("setup: want focus on %v, got %v", focus, m.tab().focus)
+		}
+
+		m.addTabFrom(m.activeTab)
+		if len(m.tabs) != 2 {
+			t.Fatalf("want two tabs, got %d", len(m.tabs))
+		}
+		if got := m.tabs[1].focus; got != focus {
+			t.Errorf("want the new tab focused on %v, got %v", focus, got)
+		}
+		if !m.tabs[1].panelFor(focus).Active() {
+			t.Errorf("the %v panel should be the active one in the new tab", focus)
+		}
+		if m.tabs[1].panelFor(1 - focus).Active() {
+			t.Errorf("the other panel should not be active when %v is focused", focus)
+		}
 	}
 }
 
@@ -468,12 +589,11 @@ func TestClosingATabReleasesASharedConnectionOncePerPanel(t *testing.T) {
 		t.Fatal("want both panels to share one connection")
 	}
 
-	// A second tab showing the same host, so the connection has a holder that
-	// outlives the tab being closed.
+	// A second tab, which copies the first one's connection, so the connection
+	// has a holder that outlives the tab being closed.
 	m.addTabFrom(m.activeTab)
-	m = connectPanel(t, m, server)
-	if got := m.tab().panelConns[m.tab().focus]; got != conn {
-		t.Fatal("want the new tab to share the connection too")
+	if got := m.tabs[1].panelConns[FocusLeft]; got != conn {
+		t.Fatal("want the new tab to hold the connection it copies")
 	}
 
 	m.closeTabAt(0)
@@ -483,7 +603,9 @@ func TestClosingATabReleasesASharedConnectionOncePerPanel(t *testing.T) {
 		t.Fatalf("the connection should survive closing one of its holders: %v", err)
 	}
 
-	m.tab().panelFor(m.tab().focus).SetPath(t.TempDir())
+	for _, side := range []FocusTarget{FocusLeft, FocusRight} {
+		m.tab().panelFor(side).SetPath(t.TempDir())
+	}
 	m.releaseUnusedConnections()
 	if _, err := conn.FS().ReadDir(srv.Root); err == nil {
 		t.Error("the connection should close once its last panel leaves the host")

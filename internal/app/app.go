@@ -1424,16 +1424,34 @@ func (m *Model) addTabFrom(from int) tea.Cmd {
 	}
 	lfs := local.New(string(filepath.Separator))
 	src := &m.tabs[from]
-	path := src.panelFor(src.focus).LocalPath()
-	left := panel.New(lfs, path, src.leftPanel.KeyMap(), m.cfg)
-	left.SetActive(true)
-	right := panel.New(lfs, path, src.leftPanel.KeyMap(), m.cfg)
+	km := src.leftPanel.KeyMap()
+	left := panel.New(lfs, src.leftPanel.LocalPath(), km, m.cfg)
+	right := panel.New(lfs, src.rightPanel.LocalPath(), km, m.cfg)
 	t := tab{
 		id:         nextTabID.Add(1),
 		leftPanel:  left,
 		rightPanel: right,
-		focus:      FocusLeft,
+		focus:      src.focus,
 		panelConns: map[FocusTarget]*remote.Conn{},
+	}
+	// The copy opens on the panel its source had focused, so it is ready for
+	// the same work rather than the other side.
+	t.panelFor(t.focus).SetActive(true)
+	for _, side := range []FocusTarget{FocusLeft, FocusRight} {
+		loc := src.panelFor(side).Location()
+		if loc.Kind != vfs.KindSSH {
+			continue
+		}
+		// The copy needs the connection its source holds, or it would show a
+		// local path where the source shows the server.
+		conn := src.panelConns[side]
+		if conn == nil {
+			continue
+		}
+		m.connRegistry.Retain(conn)
+		loc.Origin = ""
+		t.panelFor(side).SetLocation(loc)
+		t.panelConns[side] = conn
 	}
 	m.tabs = append(m.tabs, t)
 	m.activeTab = len(m.tabs) - 1

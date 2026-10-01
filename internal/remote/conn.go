@@ -190,6 +190,18 @@ func (r *Registry) Release(c *Conn) {
 	c.shutdown()
 }
 
+// Retain records another holder, such as a tab copied from one showing a
+// server. The copy gives the reference back with Release when it closes.
+func (r *Registry) Retain(c *Conn) {
+	if c == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	c.refs++
+}
+
 // drop removes a dead connection, leaving any replacement in place.
 func (r *Registry) drop(c *Conn) {
 	r.mu.Lock()
