@@ -62,8 +62,6 @@ type Model struct {
 // New creates an empty preview.
 func New() Model { return Model{id: nextSeq.Add(1)} }
 
-func (m Model) ID() uint64 { return m.id }
-
 // SetSize sets the box dimensions. height is the content row count (matching the
 // panel's list height) so the bordered box aligns with the sibling panel.
 func (m *Model) SetSize(w, h int) {
