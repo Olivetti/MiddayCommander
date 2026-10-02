@@ -81,6 +81,9 @@ type KeyBindings struct {
 	ToggleHidden StringOrList `toml:"toggle_hidden"`
 	QuickView    StringOrList `toml:"quick_view"`
 	CopyPath     StringOrList `toml:"copy_path"`
+
+	// Tabs
+	Tabs StringOrList `toml:"tabs"`
 }
 
 // StringOrList can unmarshal from either a single string or a list of strings.
@@ -165,6 +168,8 @@ func DefaultKeyBindings() KeyBindings {
 		ToggleHidden: StringOrList{"ctrl+h"},
 		QuickView:    StringOrList{"ctrl+q"},
 		CopyPath:     StringOrList{"shift+f5"},
+
+		Tabs: StringOrList{"ctrl+n"},
 	}
 }
 
@@ -247,6 +252,7 @@ func mergeKeys(dst, src *KeyBindings) {
 	mergeKey(&dst.ToggleHidden, src.ToggleHidden)
 	mergeKey(&dst.QuickView, src.QuickView)
 	mergeKey(&dst.CopyPath, src.CopyPath)
+	mergeKey(&dst.Tabs, src.Tabs)
 }
 
 func mergeKey(dst *StringOrList, src StringOrList) {
@@ -312,6 +318,7 @@ func normalizeAllKeys(kb *KeyBindings) {
 	normalizeSlice(&kb.ToggleHidden)
 	normalizeSlice(&kb.QuickView)
 	normalizeSlice(&kb.CopyPath)
+	normalizeSlice(&kb.Tabs)
 }
 
 // SaveTheme writes the theme name to the config file, preserving other settings.

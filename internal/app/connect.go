@@ -10,7 +10,6 @@ import (
 
 	"github.com/kooler/MiddayCommander/internal/remote"
 	"github.com/kooler/MiddayCommander/internal/ui/dialog"
-	"github.com/kooler/MiddayCommander/internal/ui/panel"
 	"github.com/kooler/MiddayCommander/internal/vfs"
 )
 
@@ -22,19 +21,22 @@ type connectedMsg struct {
 	conn *remote.Conn
 	path string
 	side FocusTarget
-	err  error
+	// tabID pins the result to the tab the attempt came from.
+	tabID uint64
+	err   error
 }
 
 // connectCmd dials off the event loop. Every SFTP call runs inside a tea.Cmd
 // like this one: from Update, a slow network would freeze the interface.
-func connectCmd(ctx context.Context, reg *remote.Registry, srv remote.Server, creds remote.Credentials, remotePath string, side FocusTarget) tea.Cmd {
+func connectCmd(ctx context.Context, reg *remote.Registry, srv remote.Server, creds remote.Credentials, remotePath string, tabID uint64, side FocusTarget) tea.Cmd {
 	return func() tea.Msg {
 		conn, err := reg.Acquire(ctx, srv, creds)
 		return connectedMsg{
-			conn: conn,
-			path: remotePath,
-			side: side,
-			err:  err,
+			conn:  conn,
+			path:  remotePath,
+			side:  side,
+			tabID: tabID,
+			err:   err,
 		}
 	}
 }
@@ -42,7 +44,8 @@ func connectCmd(ctx context.Context, reg *remote.Registry, srv remote.Server, cr
 func (m Model) startConnect(srv remote.Server, remotePath string) (tea.Model, tea.Cmd) {
 	m.pendingServer = srv
 	m.pendingRemotePath = remotePath
-	m.pendingSide = m.focus
+	m.pendingTabID = m.tab().id
+	m.pendingSide = m.tab().focus
 	m.pendingCreds = remote.Credentials{}
 	return m.dialConnection()
 }
@@ -63,7 +66,7 @@ func (m Model) dialConnection() (tea.Model, tea.Cmd) {
 	m.dialog = &d
 
 	return m, connectCmd(ctx, m.connRegistry, m.pendingServer, m.pendingCreds,
-		m.pendingRemotePath, m.pendingSide)
+		m.pendingRemotePath, m.pendingTabID, m.pendingSide)
 }
 
 // handleConnected opens the panel, or asks the user the next question.
@@ -74,10 +77,26 @@ func (m Model) handleConnected(msg connectedMsg) (tea.Model, tea.Cmd) {
 		m.dialog.Kind() == dialog.KindProgress &&
 		m.dialog.CancelRequested()
 
+	// The tab the attempt came from may have been closed meanwhile.
+	var tab *tab
+	for i := range m.tabs {
+		if m.tabs[i].id == msg.tabID {
+			tab = &m.tabs[i]
+			break
+		}
+	}
+
 	m.dialog = nil
 	if m.opCancel != nil {
 		m.opCancel()
 		m.opCancel = nil
+	}
+
+	if tab == nil {
+		if msg.conn != nil {
+			m.connRegistry.Release(msg.conn)
+		}
+		return m, nil
 	}
 
 	if msg.err != nil {
@@ -92,13 +111,13 @@ func (m Model) handleConnected(msg connectedMsg) (tea.Model, tea.Cmd) {
 	// even when it handed back the connection this panel already had, so an
 	// unchanged connection still needs one released.
 	side := msg.side
-	if old := m.panelConns[side]; old != nil {
+	if old := tab.panelConns[side]; old != nil {
 		m.connRegistry.Release(old)
 	}
-	if m.panelConns == nil {
-		m.panelConns = map[FocusTarget]*remote.Conn{}
+	if tab.panelConns == nil {
+		tab.panelConns = map[FocusTarget]*remote.Conn{}
 	}
-	m.panelConns[side] = msg.conn
+	tab.panelConns[side] = msg.conn
 
 	// The resolved server is the one that was actually dialled: ~/.ssh/config
 	// may have supplied the user or the real hostname, and the header, the
@@ -114,7 +133,8 @@ func (m Model) handleConnected(msg connectedMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	p := m.panelFor(side)
+	p := tab.panelFor(side)
+
 	p.SetLocation(vfs.Location{
 		FS:     msg.conn.FS(),
 		Path:   remotePath,
@@ -161,22 +181,16 @@ func (m Model) handleConnectError(err error) (tea.Model, tea.Cmd) {
 	return m.showError("Connection failed", err)
 }
 
-func (m *Model) panelFor(side FocusTarget) *panel.Model {
-	if side == FocusLeft {
-		return &m.leftPanel
-	}
-	return &m.rightPanel
-}
-
 // releaseUnusedConnections is how leaving a server with ".." closes it.
 func (m *Model) releaseUnusedConnections() {
-	for side, conn := range m.panelConns {
+	t := m.tab()
+	for side, conn := range t.panelConns {
 		if conn == nil {
 			continue
 		}
-		if !m.panelFor(side).UsesFS(conn.FS()) {
+		if !t.panelFor(side).UsesFS(conn.FS()) {
 			m.connRegistry.Release(conn)
-			delete(m.panelConns, side)
+			delete(t.panelConns, side)
 		}
 	}
 }

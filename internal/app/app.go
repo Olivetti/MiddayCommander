@@ -8,7 +8,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,6 +31,7 @@ import (
 	"github.com/kooler/MiddayCommander/internal/ui/panel"
 	"github.com/kooler/MiddayCommander/internal/ui/quickview"
 	"github.com/kooler/MiddayCommander/internal/ui/servers"
+	"github.com/kooler/MiddayCommander/internal/ui/tablist"
 	"github.com/kooler/MiddayCommander/internal/ui/theme"
 	"github.com/kooler/MiddayCommander/internal/ui/themepicker"
 	"github.com/kooler/MiddayCommander/internal/vfs"
@@ -42,6 +45,13 @@ const (
 	FocusLeft FocusTarget = iota
 	FocusRight
 )
+
+func (f FocusTarget) oppositeSide() FocusTarget {
+	if f == FocusLeft {
+		return FocusRight
+	}
+	return FocusLeft
+}
 
 // Dialog tags identify which operation triggered the dialog.
 const (
@@ -62,18 +72,38 @@ const (
 	tagStage         = "stage"
 )
 
-// Model is the root application model.
-type Model struct {
+// tab is one open tab: a panel pair plus its per-tab state.
+type tab struct {
+	// id lets a connect result find the tab it came from.
+	id         uint64
 	leftPanel  panel.Model
 	rightPanel panel.Model
 	focus      FocusTarget
-	keyMap     KeyMap
-	theme      theme.Theme
-	cfg        config.Config
-	version    string
-	menuItems  []menubar.Item
-	width      int
-	height     int
+	panelConns map[FocusTarget]*remote.Conn
+	quickview  *quickview.Model
+	quickFocus bool
+}
+
+// panelFor is the only place a FocusTarget maps to a panel field.
+func (t *tab) panelFor(side FocusTarget) *panel.Model {
+	if side == FocusLeft {
+		return &t.leftPanel
+	}
+	return &t.rightPanel
+}
+
+var nextTabID atomic.Uint64
+
+type Model struct {
+	tabs      []tab
+	activeTab int
+	keyMap    KeyMap
+	theme     theme.Theme
+	cfg       config.Config
+	version   string
+	menuItems []menubar.Item
+	width     int
+	height    int
 
 	// Overlays
 	dialog      *dialog.Model
@@ -84,12 +114,7 @@ type Model struct {
 	themePicker *themepicker.Model
 	cmdExec     *cmdexec.Model
 	copyPath    *copypath.Model
-
-	// Quick view: non-nil when the inactive pane shows a file preview.
-	// quickFocus toggles whether keys scroll the preview (true) or drive the
-	// active listing (false). m.focus always remains the driver panel.
-	quickview  *quickview.Model
-	quickFocus bool
+	tablist     *tablist.Model
 
 	// Saved theme for reverting on Esc in theme picker
 	themeBeforePick theme.Theme
@@ -100,12 +125,12 @@ type Model struct {
 	// Saved servers, live connections, and the panel each one serves.
 	serverStore  *remote.Store
 	connRegistry *remote.Registry
-	panelConns   map[FocusTarget]*remote.Conn
 
 	// Kept while a host key or passphrase dialog is open, so the attempt can
 	// be retried with the answer.
 	pendingServer      remote.Server
 	pendingRemotePath  string
+	pendingTabID       uint64
 	pendingSide        FocusTarget
 	pendingCreds       remote.Credentials
 	pendingFingerprint string
@@ -157,9 +182,16 @@ func New(version string) Model {
 	th := theme.Resolve(cfg.Theme)
 
 	return Model{
-		leftPanel:      left,
-		rightPanel:     right,
-		focus:          FocusLeft,
+		tabs: []tab{
+			{
+				id:         nextTabID.Add(1),
+				leftPanel:  left,
+				rightPanel: right,
+				focus:      FocusLeft,
+				panelConns: map[FocusTarget]*remote.Conn{},
+			},
+		},
+		activeTab:      0,
 		keyMap:         KeyMapFromConfig(cfg.Keys),
 		theme:          th,
 		cfg:            cfg,
@@ -169,7 +201,6 @@ func New(version string) Model {
 		bookmarkStore:  bookmark.LoadStore(),
 		serverStore:    remote.LoadStore(),
 		connRegistry:   remote.NewRegistry(),
-		panelConns:     map[FocusTarget]*remote.Conn{},
 	}
 }
 
@@ -191,8 +222,8 @@ func panelKeyMapFromConfig(keys config.KeyBindings) panel.KeyMap {
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		m.leftPanel.LoadDir(),
-		m.rightPanel.LoadDir(),
+		m.tab().leftPanel.LoadDir(),
+		m.tab().rightPanel.LoadDir(),
 	)
 }
 
@@ -205,23 +236,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case panel.DirLoadedMsg:
-		m.leftPanel.HandleDirLoaded(msg)
-		m.rightPanel.HandleDirLoaded(msg)
-		if m.quickview != nil && !m.quickFocus {
+		// The panel that asked may sit in a tab that is no longer active, so
+		// every tab is offered the load and each one decides by ID. The loop
+		// has to keep going after one panel accepts.
+		var handled bool
+		for i := range m.tabs {
+			handled = m.tabs[i].leftPanel.HandleDirLoaded(msg) || handled
+			handled = m.tabs[i].rightPanel.HandleDirLoaded(msg) || handled
+		}
+		if !handled {
+			return m, nil
+		}
+		if m.tab().quickview != nil && !m.tab().quickFocus {
 			return m, m.syncQuickView()
 		}
 		return m, nil
 
 	case panel.RestoreCursorMsg:
-		m.activePanel().RestoreCursor(msg.Name)
-		if m.quickview != nil && !m.quickFocus {
+		for i := range m.tabs {
+			if m.tabs[i].leftPanel.Owns(msg.ID) {
+				m.tabs[i].leftPanel.RestoreCursor(msg.Name)
+				break
+			}
+			if m.tabs[i].rightPanel.Owns(msg.ID) {
+				m.tabs[i].rightPanel.RestoreCursor(msg.Name)
+				break
+			}
+		}
+		if m.tab().quickview != nil && !m.tab().quickFocus {
 			return m, m.syncQuickView()
 		}
 		return m, nil
 
 	case quickview.FileLoadedMsg:
-		if m.quickview != nil {
-			m.quickview.HandleFileLoaded(msg)
+		for i := range m.tabs {
+			if qv := m.tabs[i].quickview; qv != nil {
+				qv.HandleFileLoaded(msg)
+			}
 		}
 		return m, nil
 
@@ -278,6 +329,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case bookmarks.DismissMsg:
 		m.bookmarks = nil
+		return m, nil
+
+	case tablist.JumpMsg:
+		m.tablist = nil
+		if msg.Index >= 0 && msg.Index < len(m.tabs) {
+			m.activeTab = msg.Index
+			m.recalcLayout()
+			var cmd tea.Cmd
+			if m.tab().quickview != nil {
+				cmd = m.syncQuickView()
+			}
+			return m, cmd
+		}
+		return m, nil
+
+	case tablist.NewMsg:
+		m.tablist = nil
+		return m, m.addTabFrom(msg.From)
+
+	case tablist.CloseMsg:
+		// Keep the list open so several tabs can be closed in a row.
+		m.closeTabAt(msg.Index)
+		m.openTabList(min(msg.Index, len(m.tabs)-1))
+		return m, nil
+
+	case tablist.DismissMsg:
+		m.tablist = nil
 		return m, nil
 
 	case servers.ConnectMsg:
@@ -504,6 +582,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Tab list overlay gets priority
+		if m.tablist != nil {
+			newTL, cmd := m.tablist.Update(msg)
+			m.tablist = &newTL
+			return m, cmd
+		}
+
 		if m.servers != nil {
 			newSV, cmd := m.servers.Update(msg)
 			m.servers = &newSV
@@ -561,14 +646,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Quick view active: Esc closes it; Tab toggles preview focus.
-		if m.quickview != nil {
+		if m.tab().quickview != nil {
 			if msg.String() == "esc" {
 				m.closeQuickView()
 				return m, nil
 			}
 			if key.Matches(msg, m.keyMap.TogglePanel) {
-				m.quickFocus = !m.quickFocus
-				m.quickview.SetFocused(m.quickFocus)
+				t := m.tab()
+				t.quickFocus = !t.quickFocus
+				t.quickview.SetFocused(t.quickFocus)
 				return m, nil
 			}
 			if key.Matches(msg, m.keyMap.QuickView) {
@@ -576,8 +662,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// While the preview is focused it is modal: only scroll keys apply.
-			if m.quickFocus {
-				m.quickview.Update(msg)
+			if m.tab().quickFocus {
+				m.tab().quickview.Update(msg)
 				return m, nil
 			}
 		}
@@ -613,10 +699,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case key.Matches(msg, m.keyMap.SwapPanels):
-			if m.quickview != nil {
+			if m.tab().quickview != nil {
 				return m, nil // swap disabled while previewing
 			}
-			m.leftPanel, m.rightPanel = m.rightPanel, m.leftPanel
+			t := m.tab()
+			t.leftPanel, t.rightPanel = t.rightPanel, t.leftPanel
 			m.swapPanelConns()
 			m.recalcLayout()
 			return m, nil
@@ -665,6 +752,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keyMap.Help):
 			return m.startHelp()
 
+		case key.Matches(msg, m.keyMap.Tabs):
+			return m.startTabs()
+
 		case key.Matches(msg, m.keyMap.ThemePicker):
 			return m.startThemePicker()
 
@@ -676,9 +766,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, startTerminalCmd(m.activePanel().LocalPath())
 
 		case key.Matches(msg, m.keyMap.ToggleHidden):
-			m.leftPanel.ToggleHidden()
-			m.rightPanel.ToggleHidden()
-			_ = config.SaveShowHidden(m.leftPanel.ShowHidden())
+			m.tab().leftPanel.ToggleHidden()
+			m.tab().rightPanel.ToggleHidden()
+			_ = config.SaveShowHidden(m.tab().leftPanel.ShowHidden())
 			return m, m.refreshBothPanels()
 
 		case key.Matches(msg, m.keyMap.SelectGroup):
@@ -700,7 +790,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ".." out of a server leaves its connection unused.
 		m.releaseUnusedConnections()
 		// If quick view is following the cursor, re-load when the selection moved.
-		if m.quickview != nil && !m.quickFocus {
+		if m.tab().quickview != nil && !m.tab().quickFocus {
 			cmd = tea.Batch(cmd, m.syncQuickView())
 		}
 		return m, cmd
@@ -714,11 +804,11 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
-	leftView := m.leftPanel.View(m.theme)
-	rightView := m.rightPanel.View(m.theme)
-	if m.quickview != nil {
-		qvView := m.quickview.View(m.theme, m.quickFocus)
-		if m.focus == FocusLeft {
+	leftView := m.tab().leftPanel.View(m.theme)
+	rightView := m.tab().rightPanel.View(m.theme)
+	if m.tab().quickview != nil {
+		qvView := m.tab().quickview.View(m.theme, m.tab().quickFocus)
+		if m.tab().focus == FocusLeft {
 			rightView = qvView // driver is left, preview replaces right
 		} else {
 			leftView = qvView
@@ -726,13 +816,18 @@ func (m Model) View() string {
 	}
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftView, rightView)
 
+	components := []string{panels}
+	if tabBar := m.renderTabBar(m.theme, m.width); tabBar != "" {
+		components = append([]string{tabBar}, components...)
+	}
+	screen := lipgloss.JoinVertical(lipgloss.Left, components...)
+
 	items := m.menuItems
 	if m.shiftHeld {
 		items = m.shiftMenuItems
 	}
 	fkeyView := menubar.View(m.theme, m.width, items)
-
-	screen := lipgloss.JoinVertical(lipgloss.Left, panels, fkeyView)
+	screen = lipgloss.JoinVertical(lipgloss.Left, screen, fkeyView)
 
 	if m.copyPath != nil {
 		box := m.copyPath.View(m.theme, m.width, m.height)
@@ -741,6 +836,10 @@ func (m Model) View() string {
 	} else if m.help != nil {
 		box := m.help.View(m.theme, m.width, m.height)
 		bw, bh := m.help.BoxSize(m.width, m.height)
+		screen = overlay.Place(screen, box, m.width, m.height, bw, bh)
+	} else if m.tablist != nil {
+		box := m.tablist.View(m.width, m.height)
+		bw, bh := m.tablist.BoxSize(m.width, m.height)
 		screen = overlay.Place(screen, box, m.width, m.height, bw, bh)
 	} else if m.bookmarks != nil {
 		box := m.bookmarks.View(m.theme, m.width, m.height)
@@ -789,6 +888,8 @@ func (m Model) dispatchKey(raw string) (tea.Model, tea.Cmd) {
 		return m.startRename()
 	case contains(cfg.CopyPath, raw):
 		return m.startCopyPath()
+	case contains(cfg.Tabs, raw):
+		return m.startTabs()
 	case contains(cfg.View, raw):
 		return m.startView()
 	case contains(cfg.Edit, raw):
@@ -969,6 +1070,28 @@ func (m Model) startBookmarks() (tea.Model, tea.Cmd) {
 	bm := bookmarks.New(m.bookmarkStore, p.Location().URLFor(p.Path()), m.width, m.height)
 	m.bookmarks = &bm
 	return m, nil
+}
+
+func (m Model) startTabs() (tea.Model, tea.Cmd) {
+	m.openTabList(m.activeTab)
+	return m, nil
+}
+
+func (m *Model) openTabList(cursor int) {
+	rows := make([]tablist.Row, 0, len(m.tabs))
+	for i, t := range m.tabs {
+		rows = append(rows, tablist.Row{
+			Number: i + 1,
+			Left:   t.leftPanel.Location().Display(),
+			Right:  t.rightPanel.Location().Display(),
+			Active: i == m.activeTab,
+		})
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	tl := tablist.New(rows, cursor, m.width, m.height, len(m.tabs), maxTabs)
+	m.tablist = &tl
 }
 
 func (m Model) startServers() (tea.Model, tea.Cmd) {
@@ -1200,60 +1323,64 @@ func (m Model) quit() tea.Cmd {
 
 // --- Layout helpers ---
 
+func (m *Model) tab() *tab {
+	return &m.tabs[m.activeTab]
+}
+
 func (m *Model) activePanel() *panel.Model {
-	if m.focus == FocusLeft {
-		return &m.leftPanel
-	}
-	return &m.rightPanel
+	t := m.tab()
+	return t.panelFor(t.focus)
 }
 
 // ActivePanelPath is what the shell wrapper cd's into on exit. An archive or
 // server has no path this machine can enter, so the local one is reported.
 func (m Model) ActivePanelPath() string {
-	p := m.leftPanel
-	if m.focus == FocusRight {
-		p = m.rightPanel
-	}
-	return p.LocalPath()
+	t := m.tab()
+	return t.panelFor(t.focus).LocalPath()
 }
 
 func (m *Model) inactivePanelModel() *panel.Model {
-	if m.focus == FocusLeft {
-		return &m.rightPanel
-	}
-	return &m.leftPanel
+	t := m.tab()
+	return t.panelFor(t.focus.oppositeSide())
 }
 
 func (m *Model) toggleFocus() {
-	if m.focus == FocusLeft {
-		m.focus = FocusRight
-		m.leftPanel.SetActive(false)
-		m.rightPanel.SetActive(true)
+	t := m.tab()
+	if t.focus == FocusLeft {
+		t.focus = FocusRight
+		t.leftPanel.SetActive(false)
+		t.rightPanel.SetActive(true)
 	} else {
-		m.focus = FocusLeft
-		m.leftPanel.SetActive(true)
-		m.rightPanel.SetActive(false)
+		t.focus = FocusLeft
+		t.leftPanel.SetActive(true)
+		t.rightPanel.SetActive(false)
 	}
 }
 
+// recalcLayout sizes the panels, leaving room for the tab bar when shown.
 func (m *Model) recalcLayout() {
-	panelHeight := m.height - 3 // 2 for panel borders (top+bottom), 1 for fkey bar
+	// 2 panel borders, 1 fkey bar.
+	panelHeight := m.height - 3
+	if len(m.tabs) > 1 {
+		panelHeight--
+	}
 	if panelHeight < 1 {
 		panelHeight = 1
 	}
 	panelWidth := m.width / 2
 	rightWidth := m.width - panelWidth
 
-	m.leftPanel.SetSize(panelWidth, panelHeight)
-	m.rightPanel.SetSize(rightWidth, panelHeight)
+	t := m.tab()
+	t.leftPanel.SetSize(panelWidth, panelHeight)
+	t.rightPanel.SetSize(rightWidth, panelHeight)
 
-	if m.quickview != nil {
+	if m.tab().quickview != nil {
 		// The preview occupies the inactive pane's slot.
 		w := rightWidth
-		if m.focus == FocusRight {
+		if t.focus == FocusRight {
 			w = panelWidth
 		}
-		m.quickview.SetSize(w, panelHeight)
+		t.quickview.SetSize(w, panelHeight)
 	}
 }
 
@@ -1261,8 +1388,9 @@ func (m *Model) recalcLayout() {
 // panel's current selection. Focus stays on the driver (listing) panel.
 func (m *Model) openQuickView() tea.Cmd {
 	qv := quickview.New()
-	m.quickview = &qv
-	m.quickFocus = false
+	t := m.tab()
+	t.quickview = &qv
+	t.quickFocus = false
 	m.recalcLayout()
 	return m.syncQuickView()
 }
@@ -1271,21 +1399,214 @@ func (m *Model) openQuickView() tea.Cmd {
 // the map is keyed by side, but the panels moved, and the release sweep would
 // otherwise close a connection the other panel is still showing.
 func (m *Model) swapPanelConns() {
-	left, right := m.panelConns[FocusLeft], m.panelConns[FocusRight]
-	delete(m.panelConns, FocusLeft)
-	delete(m.panelConns, FocusRight)
+	t := m.tab()
+	left, right := t.panelConns[FocusLeft], t.panelConns[FocusRight]
+	delete(t.panelConns, FocusLeft)
+	delete(t.panelConns, FocusRight)
 	if right != nil {
-		m.panelConns[FocusLeft] = right
+		t.panelConns[FocusLeft] = right
 	}
 	if left != nil {
-		m.panelConns[FocusRight] = left
+		t.panelConns[FocusRight] = left
 	}
 }
 
 // closeQuickView restores the inactive pane to its listing.
 func (m *Model) closeQuickView() {
-	m.quickview = nil
-	m.quickFocus = false
+	t := m.tab()
+	t.quickview = nil
+	t.quickFocus = false
+}
+
+func (m *Model) addTabFrom(from int) tea.Cmd {
+	if len(m.tabs) >= maxTabs || from < 0 || from >= len(m.tabs) {
+		return nil
+	}
+	lfs := local.New(string(filepath.Separator))
+	src := &m.tabs[from]
+	km := src.leftPanel.KeyMap()
+	left := panel.New(lfs, src.leftPanel.LocalPath(), km, m.cfg)
+	right := panel.New(lfs, src.rightPanel.LocalPath(), km, m.cfg)
+	t := tab{
+		id:         nextTabID.Add(1),
+		leftPanel:  left,
+		rightPanel: right,
+		focus:      src.focus,
+		panelConns: map[FocusTarget]*remote.Conn{},
+	}
+	// The copy opens on the panel its source had focused, so it is ready for
+	// the same work rather than the other side.
+	t.panelFor(t.focus).SetActive(true)
+	for _, side := range []FocusTarget{FocusLeft, FocusRight} {
+		loc := src.panelFor(side).Location()
+		if loc.Kind != vfs.KindSSH {
+			continue
+		}
+		// The copy needs the connection its source holds, or it would show a
+		// local path where the source shows the server.
+		conn := src.panelConns[side]
+		if conn == nil {
+			continue
+		}
+		m.connRegistry.Retain(conn)
+		loc.Origin = ""
+		t.panelFor(side).SetLocation(loc)
+		t.panelConns[side] = conn
+	}
+	m.tabs = append(m.tabs, t)
+	m.activeTab = len(m.tabs) - 1
+	m.recalcLayout()
+	return tea.Batch(m.tab().leftPanel.LoadDir(), m.tab().rightPanel.LoadDir())
+}
+
+// closeTabAt removes a tab, releasing its connections and fixing up the
+// active index.
+func (m *Model) closeTabAt(i int) {
+	if len(m.tabs) <= 1 || i < 0 || i >= len(m.tabs) {
+		return
+	}
+	removed := m.tabs[i]
+	for _, conn := range removed.panelConns {
+		if conn != nil {
+			m.connRegistry.Release(conn)
+		}
+	}
+	m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
+	if i < m.activeTab {
+		m.activeTab--
+	}
+	if m.activeTab >= len(m.tabs) {
+		m.activeTab = len(m.tabs) - 1
+	}
+	m.recalcLayout()
+}
+
+const maxTabs = 10
+
+// Width is split across the open tabs, so labels grow as tabs close.
+func (m Model) renderTabBar(th theme.Theme, w int) string {
+	n := len(m.tabs)
+	if n <= 1 || w <= 0 {
+		return ""
+	}
+	base := w / n
+	extra := w - base*n
+	var parts []string
+	for i, t := range m.tabs {
+		cell := base
+		if i < extra {
+			cell++
+		}
+		labelW := cell - 4 // "NN: " prefix
+		item := fmt.Sprintf("%2d", i+1)
+		if labelW > 0 {
+			item += ": " + t.label(labelW)
+		}
+		if cell < 3 {
+			item = t.label(cell)
+		}
+		style := th.Tab
+		if i == m.activeTab {
+			style = th.TabActive
+		}
+		parts = append(parts, style.Width(cell).MaxWidth(cell).Render(item))
+	}
+	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(bar)
+}
+
+func (t *tab) label(width int) string {
+	return abbreviatePath(t.panelFor(t.focus).Location().Display(), width)
+}
+
+// abbreviatePath shortens a path to fit within width runes. Home paths start
+// with ~, and intermediate components collapse to their first letter. A
+// labelled location ("ssh://user@host/dir") keeps its scheme and authority.
+func abbreviatePath(p string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if p == "" {
+		return "untitled"
+	}
+
+	// A labelled location must skip filepath.Clean, which collapses the "//".
+	if i := strings.Index(p, "://"); i >= 0 {
+		prefix, rest := p[:i+3], p[i+3:]
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			prefix += rest[:j+1]
+			rest = rest[j+1:]
+		} else {
+			return truncateRunes(prefix, width)
+		}
+		used := utf8.RuneCountInString(prefix)
+		if used >= width {
+			return truncateRunes(prefix, width)
+		}
+		return prefix + abbreviatePath(rest, width-used)
+	}
+
+	p = filepath.Clean(p)
+	if p == "." || p == ".." {
+		return p
+	}
+
+	if strings.HasPrefix(p, "/") {
+		home, err := os.UserHomeDir()
+		if err == nil && strings.HasPrefix(p, home) {
+			rest := p[len(home):]
+			if rest == "" || rest[0] == filepath.Separator {
+				p = "~" + rest
+			}
+		}
+	}
+
+	// Split keeps the empty element a leading "/" produces.
+	allParts := strings.Split(p, string(filepath.Separator))
+
+	if len(allParts) <= 1 {
+		return truncateRunes(p, width)
+	}
+
+	hasLeadingSep := allParts[0] == ""
+	start := 0
+	if hasLeadingSep {
+		start = 1
+	}
+
+	// Intermediate components collapse, the last one stays whole.
+	abbrevParts := make([]string, 0, len(allParts)-start)
+	for i := start; i < len(allParts); i++ {
+		part := allParts[i]
+		isLast := i == len(allParts)-1
+		if isLast {
+			abbrevParts = append(abbrevParts, part)
+		} else if part == "~" {
+			abbrevParts = append(abbrevParts, part)
+		} else if len(part) > 1 {
+			r, _ := utf8.DecodeRuneInString(part)
+			abbrevParts = append(abbrevParts, string(r))
+		} else {
+			abbrevParts = append(abbrevParts, part)
+		}
+	}
+
+	abridged := strings.Join(abbrevParts, string(filepath.Separator))
+	if hasLeadingSep {
+		abridged = string(filepath.Separator) + abridged
+	}
+	return truncateRunes(abridged, width)
+}
+
+func truncateRunes(s string, width int) string {
+	if utf8.RuneCountInString(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	if width < 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 // syncQuickView reloads the preview to match the driver's current selection,
@@ -1293,7 +1614,8 @@ func (m *Model) closeQuickView() {
 func (m *Model) syncQuickView() tea.Cmd {
 	p := m.activePanel()
 	path := p.CurrentPath()
-	if path == m.quickview.Path() {
+	t := m.tab()
+	if path == t.quickview.Path() {
 		return nil
 	}
 	entry := p.CurrentEntry()
@@ -1301,5 +1623,5 @@ func (m *Model) syncQuickView() tea.Cmd {
 	// Archive entries have no readable stream; local and remote both do.
 	available := p.Location().Kind != vfs.KindArchive
 	// A remote file comes back as a quickview.FileLoadedMsg.
-	return m.quickview.SetFile(p.CurrentRef(), p.CurrentInfo(), isDir, available)
+	return t.quickview.SetFile(p.CurrentRef(), p.CurrentInfo(), isDir, available)
 }

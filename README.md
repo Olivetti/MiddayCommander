@@ -30,6 +30,7 @@ Try online: <a href="https://build.demoshell.com/launch?snapshot=kooler%2Ftui%3A
 - **Smart autocomplete** - path and command suggestions with `Tab` completion in Go to path and Execute command
 - **File operations** - copy, move, delete, rename, mkdir with confirmation dialogs
 - **Live theme picker** - browse and preview themes with Ctrl-T
+- **Tabs** - open multiple pane pairs and switch between them with Ctrl-N
 - **Multi-file selection** - tag files with Insert or Shift+Arrow for batch operations
 - **Quick search** - start typing to jump to matching files instantly
 - **External editor/viewer** - opens files in `$EDITOR` and `$PAGER`
@@ -149,6 +150,7 @@ Now `mdcd` launches mdc; when you quit, the shell `cd`s into the directory the a
 | `Ctrl-P` | Fuzzy finder |
 | `Ctrl-B` | Bookmarks |
 | `Ctrl-T` | Theme picker (live preview) |
+| `Ctrl-N` | Tab list: `n` new, `d` close, `j`/`k` move, `f` filter, `0`–`9` jump, `Enter` switch |
 | `Ctrl-H` | Toggle hidden files |
 | `Ctrl-Q` | Quick view - preview selected file in the other pane |
 | `Shift-F5` | Copy path - pick and copy a path variant of the selected file to the clipboard |
@@ -285,6 +287,22 @@ quick_view    = "ctrl+q"
 
 See [`config.example.toml`](config.example.toml) for the full reference.
 
+## Tabs
+
+Each tab carries its own pair of panels, focus, and server connections, and a fixed-width tab bar at the top labels them. Press `Ctrl-N` to open the tab list: a floating table of the open tabs with their left and right paths.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` (or arrows) | Move through the list |
+| `n` | Open a new tab (both panes start at the tab under the cursor) |
+| `d` | Close the tab under the cursor |
+| `f`, then type | Search the list; matches a tab's number or its left/right path |
+| `0`–`9` | Jump straight to the tab with that number (`0` is the tenth) |
+| `Enter` | Switch to the tab under the cursor |
+| `Esc` | Close the list without doing anything |
+
+Up to 10 tabs can be open.
+
 ## Themes
 
 Themes are TOML files stored at `~/.config/mdc/themes/`.
@@ -337,6 +355,12 @@ fkey_hint_fg = "fg"
 fkey_hint_bg = "bg"
 fkey_label_fg = "bg"
 fkey_label_bg = "blue"
+
+[tab]
+fg         = "fg"
+bg         = "bg"
+active_fg  = "bg"
+active_bg  = "blue"
 ```
 
 Colors can be hex values (`"#89b4fa"`), ANSI color numbers (`"4"`), or palette references (`"blue"`). Any missing values fall back to the built-in default theme.

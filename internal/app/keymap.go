@@ -33,6 +33,7 @@ type KeyMap struct {
 	DeselectGroup   key.Binding
 	InvertSelection key.Binding
 	CopyPath        key.Binding
+	Tabs            key.Binding // opens the tab list dialog
 }
 
 // KeyMapFromConfig builds the global keymap from config.
@@ -63,6 +64,7 @@ func KeyMapFromConfig(keys config.KeyBindings) KeyMap {
 		DeselectGroup:   binding(keys.DeselectGroup, "deselect group"),
 		InvertSelection: binding(keys.InvertSelection, "invert selection"),
 		CopyPath:        binding(keys.CopyPath, "copy path"),
+		Tabs:            binding(keys.Tabs, "tab list"),
 	}
 }
 

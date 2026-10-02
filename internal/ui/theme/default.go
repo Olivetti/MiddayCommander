@@ -77,6 +77,13 @@ func Default() Theme {
 			Foreground(colorBlack).
 			Background(colorCyan),
 
+		Tab: lipgloss.NewStyle().
+			Foreground(colorWhite).
+			Background(colorBlack),
+		TabActive: lipgloss.NewStyle().
+			Foreground(colorBlack).
+			Background(colorCyan),
+
 		CmdLine: lipgloss.NewStyle().
 			Foreground(colorWhite).
 			Background(colorBlack),

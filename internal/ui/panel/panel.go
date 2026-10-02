@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,8 +29,15 @@ type KeyMap struct {
 	QuickSearch  key.Binding
 }
 
+// nextSeq numbers panel instances so a load can be routed back to the panel
+// that requested it.
+var nextSeq atomic.Uint64
+
 // Model represents a single file panel.
 type Model struct {
+	// id travels with LoadDir so the app can route the result back here.
+	id uint64
+
 	// stack is the chain of locations descended into, the last being on
 	// screen. An archive or server pushes; ".." at a root pops.
 	stack      []vfs.Location
@@ -57,6 +65,7 @@ type Model struct {
 // New creates a new panel browsing the given directory.
 func New(filesystem vfs.FS, path string, km KeyMap, cfg config.Config) Model {
 	return Model{
+		id:         nextSeq.Add(1),
 		stack:      []vfs.Location{vfs.NewLocation(filesystem, path, vfs.KindLocal, "")},
 		selected:   make(map[int]bool),
 		sortMode:   SortByName,
@@ -245,9 +254,10 @@ func (m Model) SelectedRefs() []vfs.FileRef {
 func (m *Model) LoadDir() tea.Cmd {
 	path := m.Path()
 	filesystem := m.Location().FS
+	id := m.id
 	return func() tea.Msg {
 		entries, err := readDir(filesystem, path)
-		return DirLoadedMsg{Path: path, Entries: entries, Err: err}
+		return DirLoadedMsg{ID: id, Path: path, Entries: entries, Err: err}
 	}
 }
 
@@ -261,19 +271,24 @@ func readDir(filesystem vfs.FS, path string) ([]fs.DirEntry, error) {
 
 // DirLoadedMsg is sent when a directory listing completes.
 type DirLoadedMsg struct {
+	ID      uint64 // the panel that asked for the load
 	Path    string
 	Entries []fs.DirEntry
 	Err     error
 }
 
-// HandleDirLoaded processes a completed directory load.
-func (m *Model) HandleDirLoaded(msg DirLoadedMsg) {
+// HandleDirLoaded applies a completed load, reporting whether it belonged to
+// this panel.
+func (m *Model) HandleDirLoaded(msg DirLoadedMsg) bool {
+	if msg.ID != m.id {
+		return false // belongs to another panel
+	}
 	if msg.Err != nil {
 		m.err = msg.Err
-		return
+		return true
 	}
 	if msg.Path != m.Path() {
-		return // stale load
+		return true // stale load
 	}
 
 	m.err = nil
@@ -306,6 +321,7 @@ func (m *Model) HandleDirLoaded(msg DirLoadedMsg) {
 		m.cursor = max(0, len(m.entries)-1)
 	}
 	m.clampOffset()
+	return true
 }
 
 // Searching returns whether quick search is active and the current query.
@@ -534,7 +550,7 @@ func (m *Model) goUp() tea.Cmd {
 			return nil // already at the outermost root
 		}
 		return tea.Sequence(m.LoadDir(), func() tea.Msg {
-			return RestoreCursorMsg{Name: name}
+			return RestoreCursorMsg{ID: m.id, Name: name}
 		})
 	}
 
@@ -544,12 +560,13 @@ func (m *Model) goUp() tea.Cmd {
 	m.offset = 0
 
 	return tea.Sequence(m.LoadDir(), func() tea.Msg {
-		return RestoreCursorMsg{Name: oldDir}
+		return RestoreCursorMsg{ID: m.id, Name: oldDir}
 	})
 }
 
-// RestoreCursorMsg requests placing the cursor on a named entry after navigation.
+// RestoreCursorMsg places the cursor on a named entry after navigation.
 type RestoreCursorMsg struct {
+	ID   uint64
 	Name string
 }
 
@@ -566,6 +583,14 @@ type ExecuteFileMsg struct {
 // PreviewFileMsg is sent when the user wants to preview a file (Space on file).
 type PreviewFileMsg struct {
 	Path string
+}
+
+func (m Model) Owns(id uint64) bool {
+	return id != 0 && id == m.id
+}
+
+func (m Model) KeyMap() KeyMap {
+	return m.keyMap
 }
 
 // RestoreCursor places cursor on the named entry (used after going up).

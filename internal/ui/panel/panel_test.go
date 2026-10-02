@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/kooler/MiddayCommander/internal/config"
 	"github.com/kooler/MiddayCommander/internal/ui/theme"
 	"github.com/kooler/MiddayCommander/internal/vfs/local"
@@ -212,10 +212,10 @@ func TestRenderRowStates(t *testing.T) {
 	m.width = 30
 
 	tests := []struct {
-		name      string
-		active    bool
-		cursor    bool
-		selected  bool
+		name       string
+		active     bool
+		cursor     bool
+		selected   bool
 		expectExec bool
 	}{
 		{"normal", true, false, false, true},
@@ -249,11 +249,11 @@ type nameOnlyEntry struct {
 	isDir bool
 }
 
-func (e *nameOnlyEntry) Name() string              { return e.name }
-func (e *nameOnlyEntry) IsDir() bool               { return e.isDir }
-func (e *nameOnlyEntry) Type() fs.FileMode         { return 0 }
+func (e *nameOnlyEntry) Name() string               { return e.name }
+func (e *nameOnlyEntry) IsDir() bool                { return e.isDir }
+func (e *nameOnlyEntry) Type() fs.FileMode          { return 0 }
 func (e *nameOnlyEntry) Info() (fs.FileInfo, error) { return nil, nil }
-func (e *nameOnlyEntry) String() string            { return e.name }
+func (e *nameOnlyEntry) String() string             { return e.name }
 
 // symlinkToDirEntry is a minimal fs.DirEntry that behaves like a directory but
 // reports IsDir=false (same as os.ReadDir on a symlink-to-dir).
@@ -292,5 +292,22 @@ func TestSortEntriesSymlinkGroupsWithDirs(t *testing.T) {
 		if entries[i].Name() != name {
 			t.Errorf("entries[%d] = %q, want %q", i, entries[i].Name(), name)
 		}
+	}
+}
+
+func TestHandleDirLoadedRoutesByID(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "file.txt"), []byte("x"), 0o644)
+
+	a := newTestModel(t, dir)
+	b := newTestModel(t, dir)
+
+	// Both point at the same path, so only the ID can tell them apart.
+	msg := a.LoadDir()().(DirLoadedMsg)
+	if !a.HandleDirLoaded(msg) {
+		t.Error("the owning panel should apply its own load")
+	}
+	if b.HandleDirLoaded(msg) {
+		t.Error("another panel must ignore a load addressed to a different panel")
 	}
 }

@@ -117,6 +117,15 @@ func (m Model) rightEntries() []entry {
 		{"Terminal", fmtKeys(k.Terminal)},
 		{"Help", fmtKeys(k.Help)},
 		{"Quit", fmtKeys(k.Quit)},
+		{"", ""},
+		{"── Tabs ──", ""},
+		{"Tab list", fmtKeys(k.Tabs)},
+		{"  · new tab: n", ""},
+		{"  · close tab: d", ""},
+		{"  · move: j/k", ""},
+		{"  · filter: f, then type", ""},
+		{"  · jump to tab: 0-9", ""},
+		{"  · switch tab: Enter", ""},
 	}
 }
 

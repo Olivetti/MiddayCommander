@@ -241,7 +241,8 @@ func writeZshDir() (string, error) {
 
 // refreshBothPanels returns commands to reload both panels.
 func (m *Model) refreshBothPanels() tea.Cmd {
-	return tea.Batch(m.leftPanel.LoadDir(), m.rightPanel.LoadDir())
+	t := m.tab()
+	return tea.Batch(t.leftPanel.LoadDir(), t.rightPanel.LoadDir())
 }
 
 // inactiveRef returns a reference to the directory shown in the panel that
