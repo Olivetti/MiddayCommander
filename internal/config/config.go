@@ -50,13 +50,14 @@ type KeyBindings struct {
 	Edit        StringOrList `toml:"edit"`
 
 	// Navigation
-	Up       StringOrList `toml:"up"`
-	Down     StringOrList `toml:"down"`
-	PageUp   StringOrList `toml:"page_up"`
-	PageDown StringOrList `toml:"page_down"`
-	Home     StringOrList `toml:"home"`
-	End      StringOrList `toml:"end"`
-	GoBack   StringOrList `toml:"go_back"`
+	Up        StringOrList `toml:"up"`
+	Down      StringOrList `toml:"down"`
+	PageUp    StringOrList `toml:"page_up"`
+	PageDown  StringOrList `toml:"page_down"`
+	Home      StringOrList `toml:"home"`
+	End       StringOrList `toml:"end"`
+	GoBack    StringOrList `toml:"go_back"`
+	GoForward StringOrList `toml:"go_forward"`
 
 	// Selection
 	ToggleSelect    StringOrList `toml:"toggle_select"`
@@ -140,13 +141,14 @@ func DefaultKeyBindings() KeyBindings {
 		View:        StringOrList{"f3"},
 		Edit:        StringOrList{"f4"},
 
-		Up:       StringOrList{"up", "k"},
-		Down:     StringOrList{"down", "j"},
-		PageUp:   StringOrList{"pgup"},
-		PageDown: StringOrList{"pgdown"},
-		Home:     StringOrList{"home"},
-		End:      StringOrList{"end"},
-		GoBack:   StringOrList{"backspace"},
+		Up:        StringOrList{"up", "k"},
+		Down:      StringOrList{"down", "j"},
+		PageUp:    StringOrList{"pgup"},
+		PageDown:  StringOrList{"pgdown"},
+		Home:      StringOrList{"home"},
+		End:       StringOrList{"end"},
+		GoBack:    StringOrList{"backspace"},
+		GoForward: StringOrList{},
 
 		ToggleSelect:    StringOrList{"insert"},
 		SelectUp:        StringOrList{"shift+up"},
@@ -234,6 +236,7 @@ func mergeKeys(dst, src *KeyBindings) {
 	mergeKey(&dst.Home, src.Home)
 	mergeKey(&dst.End, src.End)
 	mergeKey(&dst.GoBack, src.GoBack)
+	mergeKey(&dst.GoForward, src.GoForward)
 	mergeKey(&dst.ToggleSelect, src.ToggleSelect)
 	mergeKey(&dst.SelectUp, src.SelectUp)
 	mergeKey(&dst.SelectDown, src.SelectDown)
@@ -300,6 +303,7 @@ func normalizeAllKeys(kb *KeyBindings) {
 	normalizeSlice(&kb.Home)
 	normalizeSlice(&kb.End)
 	normalizeSlice(&kb.GoBack)
+	normalizeSlice(&kb.GoForward)
 	normalizeSlice(&kb.ToggleSelect)
 	normalizeSlice(&kb.SelectUp)
 	normalizeSlice(&kb.SelectDown)
