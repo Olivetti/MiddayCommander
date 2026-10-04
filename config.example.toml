@@ -47,10 +47,11 @@ page_up       = "pgup"
 page_down     = "pgdown"
 home          = "home"
 end           = "end"
-go_back       = "backspace"
+go_back       = ["backspace", "left"]
+go_forward    = ["enter", "right"]
 
 # Selection
-toggle_select    = "insert"
+toggle_select    = ["insert", "ctrl+t"]
 select_up        = "shift+up"
 select_down      = "shift+down"
 select_group     = "+"
@@ -66,7 +67,7 @@ fuzzy_find    = ["f9", "ctrl+p"]
 bookmarks     = ["f2", "ctrl+b"]
 servers       = "shift+f2"
 help          = ["f1"]
-theme_picker  = "ctrl+t"
+theme_picker  = "ctrl+l"
 cmd_exec      = "ctrl+r"
 terminal      = "ctrl+o"
 toggle_hidden = "ctrl+h"
