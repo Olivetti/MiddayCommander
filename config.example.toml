@@ -15,7 +15,7 @@ space_action = "preview"
 # Whether to ask for confirmation before executing a file.
 confirm_execute = true
 # Whether to pause and wait after execution before returning to Midday Commander.
-pause_after_execute = false
+pause_after_execute = true
 # Whether to show hidden (dot) files.
 show_hidden = true
 # controls how F3 opens files: "pager" (default, uses $PAGER/less) or "system" (OS default app)
